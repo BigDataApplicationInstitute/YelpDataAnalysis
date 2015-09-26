@@ -4,63 +4,70 @@ import Parser.*;
 import Property.*;
 
 import java.io.IOException;
-import java.io.StringReader;
-import java.util.ArrayList;
-import java.util.List;
-import java.lang.reflect.Type;
+import java.util.TreeMap;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
+import org.codehaus.jackson.map.ObjectMapper;
 
-import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
-import com.google.gson.stream.JsonReader;
 
  
 public class Demo {
     
-	public static class JsonMapper extends Mapper<Object, Text, Text, Text> {
+	public static class JsonMapper extends Mapper<Object, Text, Text, InfoWritable> {
 
-		public void map(Object key, NullWritable value, Context context) throws IOException, InterruptedException {
+		private InfoWritable info = new InfoWritable();
+		public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
 			try {
-	     
-	            Gson gson = new Gson();
-	            JsonReader reader = new JsonReader(new StringReader(value.toString()));
-	            reader.setLenient(true);
-	            
-	            Type listType = new TypeToken<ArrayList<Business>>() {
-                }.getType();
-                List<Business> yourClassList = new Gson().fromJson(value.toString(), listType);
-                for(Business list : yourClassList)
-                {
-                	context.write(new Text(list.stars), new Text(list.businessId));
-                	
-                }
-	            Business property  = gson.fromJson(reader,Business.class); 
-	            
-	            if(property != null)
-	            {
-	            	//context.write(new Text(property.stars), new Text(property.stars));
-	            }
-	            
-	           
-	            
-	            
+				ObjectMapper mapper = new ObjectMapper();
+	            String[] tuple = value.toString().split("\\n");
+	             for(int i=0;i<tuple.length; i++)
+	             {
+	            	 Business bus = mapper.readValue(tuple[i], Business.class);
+	            	 
+	            	 if(bus.reviewCount != null && Integer.parseInt(bus.reviewCount) > 3)
+	            	 {
+	            		 info.SetName(bus.name);
+	            		 info.SetStars(bus.stars);
+	            		 if(info!= null && bus.city!= null){
+	            		     context.write(new Text(bus.city), info);
+	            		 }
+	            	 }
+	              }
 
 			} catch (JSONException e) {
 	            // TODO Auto-generated catch block
 	            e.printStackTrace();
 
         }
-    }
-}
+		}
+	}
+	
+	public static class JsonReducer extends Reducer<Text, InfoWritable, Text, Text>{
+		private InfoWritable info = new InfoWritable();
+		private TreeMap<Text,Text> tree = new TreeMap<Text, Text>();
+		public void reduce(Text key, Iterable<InfoWritable> values, Context context) throws IOException, InterruptedException{
+			for(InfoWritable info : values)
+			{
+				tree.put(new Text(info.GetName()),new Text(info.GetStars()));
+				if(tree.size() > 10)
+				{
+					tree.remove(tree.firstKey());
+				}
+			}
+			for(Text t: tree.values())
+			{
+				context.write(key, t);
+			}
+		}
+	}
 	
     public static void main(String[] args) throws Exception {
     	 runJob(args[0], args[1]);
@@ -74,10 +81,11 @@ public class Demo {
         Job job = new Job(conf);
         job.setJarByClass(Demo.class);
         job.setOutputKeyClass(Text.class);
-        job.setOutputValueClass(NullWritable.class);
+        job.setOutputValueClass(InfoWritable.class);
         job.setMapperClass(JsonMapper.class);
+        job.setReducerClass(JsonReducer.class);
         //job.setInputFormatClass(KeyValueTextInputFormat.class);
-        job.setNumReduceTasks(0);
+        job.setNumReduceTasks(1);
         job.setOutputFormatClass(TextOutputFormat.class);
 
         FileInputFormat.setInputPaths(job, new Path(input));
